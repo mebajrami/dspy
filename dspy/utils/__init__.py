@@ -1,6 +1,7 @@
 from dspy.utils.callback import BaseCallback, with_callbacks
 from dspy.utils.dummies import DummyLM, DummyVectorizer, dummy_rm
 from dspy.streaming.messages import StatusMessageProvider, StatusMessage
+from dspy.utils.api_config import use_custom_api_endpoint, restore_adapter
 
 import os
 import requests
@@ -27,4 +28,6 @@ __all__ = [
     "dummy_rm",
     "StatusMessage",
     "StatusMessageProvider",
+    "use_custom_api_endpoint",
+    "restore_adapter",
 ]
