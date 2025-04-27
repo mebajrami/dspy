@@ -3,19 +3,22 @@ from typing import TYPE_CHECKING, Any, Optional, Type
 from dspy.adapters.types import History
 from dspy.adapters.types.image import try_expand_image_tags
 from dspy.signatures.signature import Signature
-from dspy.utils.callback import BaseCallback, with_callbacks
 
 if TYPE_CHECKING:
     from dspy.clients.lm import LM
+    from dspy.utils.callback import BaseCallback
 
 
 class Adapter:
-    def __init__(self, callbacks: Optional[list[BaseCallback]] = None):
+    def __init__(self, callbacks: Optional[list["BaseCallback"]] = None):
         self.callbacks = callbacks or []
-
+        
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
-
+        
+        # Import with_callbacks inside the method to avoid circular import
+        from dspy.utils.callback import with_callbacks
+        
         # Decorate format() and parse() method with with_callbacks
         cls.format = with_callbacks(cls.format)
         cls.parse = with_callbacks(cls.parse)
