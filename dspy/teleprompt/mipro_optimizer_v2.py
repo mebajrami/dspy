@@ -407,6 +407,7 @@ class MIPROv2(Teleprompter):
             "We will use the few-shot examples from the previous step, a generated dataset summary, a summary of the program code, and a randomly selected prompting tip to propose instructions."
         )
 
+        # Ensure GroundedProposer is configured correctly
         proposer = GroundedProposer(
             program=program,
             trainset=trainset,
@@ -417,9 +418,9 @@ class MIPROv2(Teleprompter):
             use_task_demos=fewshot_aware_proposer,
             num_demos_in_context=BOOTSTRAPPED_FEWSHOT_EXAMPLES_IN_CONTEXT,
             use_tip=tip_aware_proposer,
-            set_tip_randomly=tip_aware_proposer,
-            use_instruct_history=False,
-            set_history_randomly=False,
+            set_tip_randomly=True,  # Ensure tips are selected randomly
+            use_instruct_history=True,  # Enable instruction history for diversity
+            set_history_randomly=True,  # Ensure history is randomized
             verbose=self.verbose,
             rng=self.rng,
         )
@@ -434,9 +435,9 @@ class MIPROv2(Teleprompter):
             trial_logs={},
         )
 
+        # Log proposed instructions for debugging
         for i, pred in enumerate(program.predictors()):
             logger.info(f"Proposed Instructions for Predictor {i}:\n")
-            instruction_candidates[i][0] = get_signature(pred).instructions
             for j, instruction in enumerate(instruction_candidates[i]):
                 logger.info(f"{j}: {instruction}\n")
             logger.info("\n")

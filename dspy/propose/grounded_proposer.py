@@ -5,6 +5,7 @@ from dspy.propose.dataset_summary_generator import create_dataset_summary
 from dspy.propose.utils import create_example_string, create_predictor_level_history_string, strip_prefix, get_dspy_source_code
 from dspy.teleprompt.utils import get_signature, get_prompt_model
 from dspy.propose.propose_base import Proposer
+import requests
 
 # Hardcoded variables (TODO: update)
 MAX_INSTRUCT_IN_HISTORY = 5  # 10
@@ -148,15 +149,6 @@ class GenerateModuleInstruction(dspy.Module):
         self.verbose = verbose
 
         self.program_code_string = program_code_string
-        self.describe_program = dspy.Predict(DescribeProgram)
-        self.describe_module = dspy.Predict(DescribeModule)
-        self.generate_module_instruction = generate_instruction_class(
-            use_dataset_summary=use_dataset_summary,
-            program_aware=program_aware,
-            use_task_demos=use_task_demos,
-            use_instruct_history=use_instruct_history,
-            use_tip=use_tip,
-        )
 
     def forward(
         self,
@@ -169,95 +161,61 @@ class GenerateModuleInstruction(dspy.Module):
         num_demos_in_context=3,
         tip=None,
     ):
-        def gather_examples_from_sets(candidate_sets, max_examples):
-            """Helper function to gather up to augmented examples from given sets."""
-            count = 0
-            for candidate_set in candidate_sets:
-                for example in candidate_set:
-                    if "augmented" in example.keys():
-                        fields_to_use = get_signature(program.predictors()[pred_i]).fields
-                        yield create_example_string(fields_to_use, example)
-                        count += 1
-                        if count >= max_examples:
-                            return
-
-        # Construct full program demo or single module demo depending on settings
         basic_instruction = get_signature(program.predictors()[pred_i]).instructions
-        task_demos = ""
-        
-        if self.use_task_demos:
-            # Combine current and adjacent sets
-            adjacent_sets = (
-                [demo_candidates[pred_i][demo_set_i]] +
-                demo_candidates[pred_i][demo_set_i + 1:] +
-                demo_candidates[pred_i][:demo_set_i]
-            )
-            
-            # Gather examples up to the required count
-            example_strings = gather_examples_from_sets(adjacent_sets, num_demos_in_context)
-            task_demos = "\n\n".join(example_strings) + "\n\n"
+        task_demos = "No task demos provided."
 
-        # Default to no demos provided if no examples were gathered, or if we're using the first demo set
-        if not task_demos.strip() or demo_set_i == 0:
-            task_demos = "No task demos provided."
-
-        # Summarize the program
-        program_description = "Not available"
-        module_code = "Not provided"
-        module_description = "Not provided"
-        if self.program_aware:
-            try:
-                program_description = strip_prefix(
-                    self.describe_program(
-                        program_code=self.program_code_string, program_example=task_demos,
-                    ).program_description,
+        if self.use_task_demos and demo_candidates:
+            task_demos = "\n\n".join(
+                create_example_string(
+                    get_signature(program.predictors()[pred_i]).fields, example
                 )
-                if self.verbose:
-                    print(f"PROGRAM DESCRIPTION: {program_description}")
+                for example in demo_candidates[pred_i][demo_set_i][:num_demos_in_context]
+            )
 
-                inputs = []
-                outputs = []
-                for field_name, field in get_signature(program.predictors()[pred_i]).fields.items():
-                    # Access the '__dspy_field_type' from the extra metadata
-                    dspy_field_type = field.json_schema_extra.get('__dspy_field_type')
-                    
-                    # Based on the '__dspy_field_type', append to the respective list
-                    if dspy_field_type == "input":
-                        inputs.append(field_name)
-                    else:
-                        outputs.append(field_name)
+        # Ensure context is populated
+        context = data_summary if data_summary else "Default context: No dataset summary available."
 
-                module_code = f"{program.predictors()[pred_i].__class__.__name__}({', '.join(inputs)}) -> {', '.join(outputs)}"
+        # Validate examples
+        examples = [
+            {"document": example.document, "label": example.label}
+            for example in demo_candidates[pred_i][demo_set_i][:3]
+        ] if demo_candidates and demo_candidates[pred_i][demo_set_i] else []
 
-                module_description = self.describe_module(
-                    program_code=self.program_code_string,
-                    program_description=program_description,
-                    program_example=task_demos,
-                    module=module_code,
-                    max_depth=10,
-                ).module_description
-            except:
-                if self.verbose:
-                    print("Error getting program description. Running without program aware proposer.")
-                self.program_aware = False
+        if not examples:
+            examples = [{"document": "Default document", "label": "Default label"}]
 
-        # Generate an instruction for our chosen module
+        payload = {
+            "task": "document_classification",
+            "context": context,
+            "keywords": ["energy", "market", "strategy", "policy", "regulation", "pricing", "competition"],
+            "basic_instruction": basic_instruction,
+            "num_instructions": 1,
+            "examples": examples,
+        }
+
+        if tip:
+            payload["tip"] = tip
+
+        # Log the payload for debugging
         if self.verbose:
-            print(f"task_demos {task_demos}")
+            print("API Payload:", payload)
 
-        instruct = self.generate_module_instruction(
-            dataset_description=data_summary,
-            program_code=self.program_code_string,
-            module=module_code,
-            program_description=program_description,
-            module_description=module_description,
-            task_demos=task_demos,
-            tip=tip,
-            basic_instruction=basic_instruction,
-            previous_instructions=previous_instructions,
-        )
+        try:
+            response = requests.post(
+                "http://localhost:4243/generativeai/classification/document/generate_instructions",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            result = response.json()
 
-        proposed_instruction = strip_prefix(instruct.proposed_instruction)
+            proposed_instruction = result.get("instructions", [
+                "Default instruction: All documents or communications that discuss energy market strategy."
+            ])[0]
+        except requests.exceptions.RequestException as e:
+            print(f"Error calling instruction API: {e}")
+            print("Payload that caused the error:", payload)
+            proposed_instruction = "Default instruction: All documents or communications that discuss energy market strategy."
 
         return dspy.Prediction(proposed_instruction=proposed_instruction)
 
@@ -309,7 +267,10 @@ class GroundedProposer(Proposer):
         if self.use_dataset_summary:
             try:
                 self.data_summary = create_dataset_summary(
-                    trainset=trainset, view_data_batch_size=view_data_batch_size, prompt_model=prompt_model,
+                    trainset=trainset, 
+                    view_data_batch_size=view_data_batch_size, 
+                    prompt_model=prompt_model,
+                    api_url="http://localhost:4242/generativeai/classification/document/auto_opt"  # Add API endpoint
                 )
                 if self.verbose:
                     print(f"DATA SUMMARY: {self.data_summary}")
